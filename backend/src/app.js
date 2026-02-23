@@ -6,6 +6,7 @@ import generateRoute from "./routes/generateRoute.js";
 dotenv.config();
 
 const app = express();
+
 app.use(cors());
 app.use(express.json());
 app.use("/", generateRoute)
