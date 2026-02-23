@@ -22,7 +22,7 @@ export default function ChatApp() {
     setLoading(true);
 
     try {
-      const response = await axios.post('http://localhost:3000/generate', {
+      const response = await axios.post(`${import.meta.env.VITE_API_URL}/generate`, {
         message: input 
       });
 
