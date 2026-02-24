@@ -59,7 +59,7 @@ export const MessageItem: React.FC<MessageItemProps> = ({
         </div>
 
         {!isUser && (
-          <div className="mt-3 flex items-center gap-2 pt-2 border-t border-white/5 opacity-0 group-hover:opacity-100 transition-opacity duration-300">
+          <div className="mt-3 flex items-center gap-2 border-t border-white/5 pt-2">
             <button
               onClick={() => onPlayAudio(message.id, message.content, message.language)}
               className="flex items-center gap-1.5 rounded-lg bg-white/5 px-2.5 py-1.5 text-[10px] font-bold uppercase tracking-wider text-cyan-400 hover:bg-white/10 transition-colors"
@@ -70,15 +70,18 @@ export const MessageItem: React.FC<MessageItemProps> = ({
               {UI_TEXT[msgLang as keyof typeof UI_TEXT]?.listen || "Listen"}
             </button>
 
-            {isSpeaking && activeSpeechId === message.id && (
-              <button
-                onClick={onStopAudio}
-                className="flex items-center gap-1.5 rounded-lg bg-rose-500/20 px-2.5 py-1.5 text-[10px] font-bold uppercase tracking-wider text-rose-400 hover:bg-rose-500/30 transition-colors"
-              >
-                <div className="h-2 w-2 rounded-full bg-rose-400 animate-pulse" />
-                {UI_TEXT[msgLang as keyof typeof UI_TEXT]?.stop || "Stop"}
-              </button>
-            )}
+            <button
+              onClick={onStopAudio}
+              disabled={!isSpeaking || activeSpeechId !== message.id}
+              className="flex items-center gap-1.5 rounded-lg bg-rose-500/20 px-2.5 py-1.5 text-[10px] font-bold uppercase tracking-wider text-rose-400 transition-colors hover:bg-rose-500/30 disabled:cursor-not-allowed disabled:opacity-50 disabled:hover:bg-rose-500/20"
+            >
+              <div
+                className={`h-2 w-2 rounded-full ${
+                  isSpeaking && activeSpeechId === message.id ? "animate-pulse bg-rose-400" : "bg-rose-400/60"
+                }`}
+              />
+              {UI_TEXT[msgLang as keyof typeof UI_TEXT]?.stop || "Stop"}
+            </button>
           </div>
         )}
       </div>
