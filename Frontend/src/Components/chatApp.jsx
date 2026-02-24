@@ -1,307 +1,316 @@
 import React, { useState, useRef, useEffect } from 'react';
 import axios from 'axios';
-import ReactMarkdown from 'react-markdown';
 
-export default function ChatApp() {
+export default function SimpleTextChat() {
   const [messages, setMessages] = useState([]);
   const [input, setInput] = useState('');
   const [loading, setLoading] = useState(false);
+  const [isSpeaking, setIsSpeaking] = useState(false);
+  const [activeSpeechId, setActiveSpeechId] = useState(null);
   const messagesEndRef = useRef(null);
 
-  useEffect(() => {
+  const scrollToBottom = () => {
     messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
+  };
+
+  useEffect(() => {
+    scrollToBottom();
   }, [messages, loading]);
 
-  const sendMessage = async (e) => {
+  const sanitizeText = (value) =>
+    String(value ?? '')
+      .replace(/[^\p{L}\p{N}\s.,!?()'"-]/gu, ' ')
+      .replace(/\s+/g, ' ')
+      .trim();
+
+  const loadVoices = () =>
+    new Promise((resolve) => {
+      let voices = speechSynthesis.getVoices();
+      if (voices.length) {
+        resolve(voices);
+      } else {
+        speechSynthesis.onvoiceschanged = () => {
+          voices = speechSynthesis.getVoices();
+          resolve(voices);
+        };
+      }
+    });
+
+  const pickMaleVoice = (voices) => {
+    const malePattern = /(male|man|david|rahul|aditya|amit|rohan|karun|hitesh|shubh)/i;
+    return (
+      voices.find((v) => v.lang === 'hi-IN' && malePattern.test(v.name)) ||
+      voices.find((v) => v.lang.startsWith('en') && malePattern.test(v.name)) ||
+      voices.find((v) => v.lang === 'hi-IN') ||
+      voices.find((v) => v.lang.startsWith('en')) ||
+      null
+    );
+  };
+
+  const stopAudio = () => {
+    if (window?.speechSynthesis) {
+      window.speechSynthesis.cancel();
+    }
+    setIsSpeaking(false);
+    setActiveSpeechId(null);
+    setMessages((prev) => prev.map((m) => ({ ...m, audioLoading: false })));
+  };
+
+  const handlePlayAudio = async (messageId, text) => {
+    setMessages((prev) =>
+      prev.map((m) =>
+        m.id === messageId ? { ...m, audioLoading: true, audioError: null } : m
+      )
+    );
+
+    try {
+      if (!window.speechSynthesis) {
+        throw new Error('Web Speech API not supported in this browser.');
+      }
+
+      const cleanedText = sanitizeText(text);
+      if (!cleanedText) {
+        throw new Error('Readable text not available for audio.');
+      }
+
+      const utterance = new SpeechSynthesisUtterance(cleanedText);
+      const voices = await loadVoices();
+      const selectedVoice = pickMaleVoice(voices);
+
+      if (selectedVoice) {
+        utterance.voice = selectedVoice;
+        utterance.lang = selectedVoice.lang;
+      } else {
+        utterance.lang = 'hi-IN';
+      }
+
+      utterance.rate = 0.95;
+      utterance.pitch = 0.85;
+      utterance.volume = 1;
+
+      utterance.onstart = () => {
+        setIsSpeaking(true);
+        setActiveSpeechId(messageId);
+      };
+
+      utterance.onend = () => {
+        setIsSpeaking(false);
+        setActiveSpeechId(null);
+        setMessages((prev) =>
+          prev.map((m) =>
+            m.id === messageId ? { ...m, audioLoading: false } : m
+          )
+        );
+      };
+
+      utterance.onerror = () => {
+        setIsSpeaking(false);
+        setActiveSpeechId(null);
+        setMessages((prev) =>
+          prev.map((m) =>
+            m.id === messageId
+              ? {
+                  ...m,
+                  audioLoading: false,
+                  audioError: 'Voice playback failed. Text available.',
+                }
+              : m
+          )
+        );
+      };
+
+      window.speechSynthesis.cancel();
+      window.speechSynthesis.speak(utterance);
+    } catch (error) {
+      setIsSpeaking(false);
+      setActiveSpeechId(null);
+      setMessages((prev) =>
+        prev.map((m) =>
+          m.id === messageId
+            ? {
+                ...m,
+                audioLoading: false,
+                audioError: error.message,
+              }
+            : m
+        )
+      );
+    }
+  };
+
+  const handleSend = async (e) => {
     e.preventDefault();
     if (!input.trim() || loading) return;
 
-    const userMessage = { role: 'user', content: input };
-    setMessages((prev) => [...prev, userMessage]);
+    const currentInput = sanitizeText(input);
+    const userMsg = { id: Date.now(), role: 'user', content: currentInput };
+
+    setMessages((prev) => [...prev, userMsg]);
     setInput('');
     setLoading(true);
 
     try {
-      const response = await axios.post(`${import.meta.env.VITE_API_URL}/generate`, {
-        message: input 
+      const { data } = await axios.post('http://localhost:3000/generate-text', {
+        message: currentInput,
       });
 
-      const aiText = response.data.text; 
-      setMessages((prev) => [...prev, { role: 'assistant', content: aiText }]);
-      
-    } catch (error) {
-      console.error('API Error:', error);
-      setMessages((prev) => [...prev, { 
-        role: 'assistant', 
-        content: '⚠️ Server Error. Please check your connection.' 
-      }]);
+      const aiMsg = {
+        id: Date.now() + 1,
+        role: 'assistant',
+        content: sanitizeText(data?.text || 'Text response mila, lekin format issue tha.'),
+        audioLoading: false,
+        audioError: null,
+      };
+
+      setMessages((prev) => [...prev, aiMsg]);
+    } catch (err) {
+      setMessages((prev) => [
+        ...prev,
+        {
+          id: Date.now() + 1,
+          role: 'assistant',
+          content: 'Error: Server se text response nahi mila.',
+        },
+      ]);
     } finally {
       setLoading(false);
     }
   };
 
+  const renderMessageContent = (text) => {
+    return <span className="whitespace-pre-wrap leading-relaxed">{text}</span>;
+  };
+
   return (
-    <div className="min-h-screen bg-gradient-to-br from-slate-950 via-slate-900 to-slate-950 flex items-center justify-center p-3 md:p-6 relative overflow-hidden">
-      
-      {/* Animated Background Elements */}
-      <div className="absolute inset-0 overflow-hidden pointer-events-none">
-        <div className="absolute -top-1/2 -right-1/2 w-96 h-96 bg-purple-500/10 rounded-full blur-3xl animate-pulse"></div>
-        <div className="absolute -bottom-1/2 -left-1/2 w-96 h-96 bg-blue-500/10 rounded-full blur-3xl animate-pulse delay-1000"></div>
-        <div className="absolute top-1/2 left-1/2 -translate-x-1/2 -translate-y-1/2 w-96 h-96 bg-cyan-500/5 rounded-full blur-3xl animate-pulse delay-500"></div>
-      </div>
+    <div className="min-h-screen bg-zinc-950 flex items-center justify-center p-4 font-sans selection:bg-zinc-700 selection:text-white">
+      <div className="w-full max-w-4xl bg-[#0a0a0a] rounded-2xl shadow-2xl overflow-hidden flex flex-col h-[85vh] border border-zinc-800/80">
+        <div className="flex items-center gap-3 px-6 py-4 border-b border-zinc-800/80 bg-[#0a0a0a]/90 backdrop-blur-md z-10">
+          <div className="w-10 h-10 rounded-xl bg-white flex items-center justify-center shadow-md">
+            <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="black" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
+              <path d="M12 8V4H8"></path><rect width="16" height="12" x="4" y="8" rx="2"></rect><path d="M2 14h2"></path><path d="M20 14h2"></path><path d="M15 13v2"></path><path d="M9 13v2"></path>
+            </svg>
+          </div>
+          <div>
+            <h1 className="text-lg font-bold text-zinc-100 leading-tight">Ashish's AI</h1>
+            <p className="text-xs font-medium text-emerald-400 flex items-center gap-1.5">
+              <span className="w-1.5 h-1.5 rounded-full bg-emerald-400 animate-pulse shadow-[0_0_8px_rgba(52,211,153,0.8)]"></span>
+              System Online
+            </p>
+          </div>
+        </div>
 
-      {/* Main Chat Container */}
-      <div className="w-full max-w-5xl h-[92vh] relative z-10">
-        <div className="h-full bg-slate-900/40 backdrop-blur-2xl rounded-3xl border border-slate-700/50 shadow-2xl flex flex-col overflow-hidden">
-          
-          {/* Header */}
-          <header className="relative bg-gradient-to-r from-slate-800/80 via-slate-800/60 to-slate-800/80 backdrop-blur-xl border-b border-slate-700/50 p-5 md:p-6">
-            <div className="flex items-center justify-between">
-              <div className="flex items-center gap-4">
-                {/* AI Avatar */}
-                <div className="relative">
-                  <div className="w-12 h-12 rounded-2xl bg-gradient-to-br from-purple-500 to-blue-500 flex items-center justify-center shadow-lg shadow-purple-500/30">
-                    <svg className="w-6 h-6 text-white" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M13 10V3L4 14h7v7l9-11h-7z" />
-                    </svg>
-                  </div>
-                  <div className="absolute -bottom-1 -right-1 w-4 h-4 bg-emerald-400 rounded-full border-2 border-slate-800 animate-pulse"></div>
-                </div>
-                
-                <div>
-                  <h1 className="text-xl md:text-2xl font-bold bg-gradient-to-r from-white to-slate-300 bg-clip-text text-transparent">
-                    AI Code Assistant
-                  </h1>
-                  <div className="flex items-center gap-2 mt-1">
-                    <div className="flex items-center gap-1.5">
-                      <span className="w-2 h-2 rounded-full bg-emerald-400 animate-pulse"></span>
-                      <span className="text-xs md:text-sm text-emerald-400 font-medium">Active Now</span>
-                    </div>
-                    <span className="text-xs text-slate-500">•</span>
-                    <span className="text-xs text-slate-400">Designed and developed by ASHISH </span>
-                  </div>
-                </div>
-              </div>
-
-              {/* Stats */}
-              <div className="hidden md:flex items-center gap-4">
-                <div className="text-center px-4 py-2 bg-slate-800/50 rounded-xl border border-slate-700/50">
-                  <div className="text-lg font-bold text-white">{messages.filter(m => m.role === 'user').length}</div>
-                  <div className="text-[10px] text-slate-400 uppercase tracking-wider">Messages</div>
-                </div>
-              </div>
-            </div>
-          </header>
-
-          {/* Messages Area */}
-          <main className="flex-1 overflow-y-auto p-4 md:p-6 space-y-6 custom-scrollbar">
-            {messages.length === 0 ? (
-              // Empty State
-              <div className="h-full flex flex-col items-center justify-center text-center space-y-6">
-                <div className="relative">
-                  <div className="w-24 h-24 rounded-3xl bg-gradient-to-br from-purple-500/20 to-blue-500/20 flex items-center justify-center border border-purple-500/30 shadow-lg shadow-purple-500/10">
-                    <svg className="w-12 h-12 text-purple-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M8 12h.01M12 12h.01M16 12h.01M21 12c0 4.418-4.03 8-9 8a9.863 9.863 0 01-4.255-.949L3 20l1.395-3.72C3.512 15.042 3 13.574 3 12c0-4.418 4.03-8 9-8s9 3.582 9 8z" />
-                    </svg>
-                  </div>
-                  <div className="absolute -top-2 -right-2 w-6 h-6 bg-emerald-400 rounded-full flex items-center justify-center text-xs font-bold text-slate-900 animate-bounce">
-                    ✨
-                  </div>
-                </div>
-                
-                <div className="space-y-3">
-                  <h2 className="text-2xl md:text-3xl font-bold bg-gradient-to-r from-white via-purple-200 to-blue-200 bg-clip-text text-transparent">
-                    Start Your Coding Journey
-                  </h2>
-                  <p className="text-slate-400 text-sm md:text-base max-w-md">
-                    Ask me anything about Node.js, React, MongoDB, Express, or any coding challenge you're facing.
-                  </p>
-                </div>
-
-                {/* Quick Suggestions */}
-                <div className="flex flex-wrap gap-2 justify-center max-w-2xl">
-                  {[
-                    { icon: '🐛', text: 'Debug my code', color: 'from-red-500/20 to-orange-500/20 border-red-500/30' },
-                    { icon: '⚡', text: 'Optimize performance', color: 'from-yellow-500/20 to-amber-500/20 border-yellow-500/30' },
-                    { icon: '🏗️', text: 'Design architecture', color: 'from-blue-500/20 to-cyan-500/20 border-blue-500/30' },
-                    { icon: '💡', text: 'Best practices', color: 'from-purple-500/20 to-pink-500/20 border-purple-500/30' }
-                  ].map((suggestion, i) => (
-                    <button
-                      key={i}
-                      onClick={() => setInput(suggestion.text)}
-                      className={`px-4 py-2 bg-gradient-to-r ${suggestion.color} border rounded-full text-xs md:text-sm text-slate-200 hover:scale-105 transition-all duration-300 hover:shadow-lg backdrop-blur-sm`}
-                    >
-                      <span className="mr-1.5">{suggestion.icon}</span>
-                      {suggestion.text}
-                    </button>
-                  ))}
-                </div>
-              </div>
-            ) : (
-              // Messages
-              messages.map((msg, index) => (
-                <div
-                  key={index}
-                  className={`flex gap-3 md:gap-4 ${msg.role === 'user' ? 'flex-row-reverse' : 'flex-row'} animate-slideIn`}
-                >
-                  {/* Avatar */}
-                  <div className={`flex-shrink-0 w-10 h-10 md:w-12 md:h-12 rounded-2xl flex items-center justify-center shadow-lg ${
-                    msg.role === 'user'
-                      ? 'bg-gradient-to-br from-blue-500 to-cyan-500 shadow-blue-500/30'
-                      : 'bg-gradient-to-br from-purple-500 to-blue-500 shadow-purple-500/30'
-                  }`}>
-                    {msg.role === 'user' ? (
-                      <svg className="w-5 h-5 md:w-6 md:h-6 text-white" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M16 7a4 4 0 11-8 0 4 4 0 018 0zM12 14a7 7 0 00-7 7h14a7 7 0 00-7-7z" />
-                      </svg>
-                    ) : (
-                      <svg className="w-5 h-5 md:w-6 md:h-6 text-white" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M13 10V3L4 14h7v7l9-11h-7z" />
-                      </svg>
-                    )}
-                  </div>
-
-                  {/* Message Bubble */}
-                  <div className={`flex-1 max-w-[85%] md:max-w-[75%] ${msg.role === 'user' ? 'items-end' : 'items-start'} flex flex-col gap-1.5`}>
-                    <div className="flex items-center gap-2">
-                      <span className="text-xs font-semibold text-slate-400 uppercase tracking-wider">
-                        {msg.role === 'user' ? 'You' : 'AI Assistant'}
-                      </span>
-                      <span className="text-[10px] text-slate-600">•</span>
-                      <span className="text-[10px] text-slate-600">Just now</span>
-                    </div>
-                    
-                    <div className={`p-4 md:p-5 rounded-2xl shadow-xl ${
-                      msg.role === 'user'
-                        ? 'bg-gradient-to-br from-blue-600 to-cyan-600 text-white rounded-br-sm shadow-blue-500/20'
-                        : 'bg-slate-800/60 backdrop-blur-xl border border-slate-700/50 text-slate-100 rounded-bl-sm shadow-slate-900/50'
-                    }`}>
-                      {msg.role === 'user' ? (
-                        <p className="whitespace-pre-wrap leading-relaxed text-sm md:text-base">{msg.content}</p>
-                      ) : (
-                        <div className="prose prose-invert prose-sm md:prose-base max-w-none prose-pre:bg-slate-950/50 prose-pre:border prose-pre:border-slate-700 prose-code:text-cyan-400 prose-headings:text-slate-100 prose-p:text-slate-200 prose-strong:text-white prose-a:text-blue-400">
-                          <ReactMarkdown>{msg.content}</ReactMarkdown>
-                        </div>
-                      )}
-                    </div>
-                  </div>
-                </div>
-              ))
-            )}
-
-            {/* Loading Indicator */}
-            {loading && (
-              <div className="flex gap-4 animate-slideIn">
-                <div className="flex-shrink-0 w-10 h-10 md:w-12 md:h-12 rounded-2xl bg-gradient-to-br from-purple-500 to-blue-500 flex items-center justify-center shadow-lg shadow-purple-500/30">
-                  <svg className="w-5 h-5 md:w-6 md:h-6 text-white animate-pulse" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M13 10V3L4 14h7v7l9-11h-7z" />
-                  </svg>
-                </div>
-                <div className="flex-1">
-                  <div className="bg-slate-800/60 backdrop-blur-xl border border-slate-700/50 rounded-2xl rounded-bl-sm p-5 shadow-xl">
-                    <div className="flex items-center gap-2">
-                      <div className="w-2 h-2 bg-purple-400 rounded-full animate-bounce"></div>
-                      <div className="w-2 h-2 bg-blue-400 rounded-full animate-bounce" style={{ animationDelay: '0.2s' }}></div>
-                      <div className="w-2 h-2 bg-cyan-400 rounded-full animate-bounce" style={{ animationDelay: '0.4s' }}></div>
-                      <span className="text-sm text-slate-400 ml-2">AI is thinking...</span>
-                    </div>
-                  </div>
-                </div>
-              </div>
-            )}
-            
-            <div ref={messagesEndRef} />
-          </main>
-
-          {/* Input Area */}
-          <footer className="bg-slate-800/60 backdrop-blur-xl border-t border-slate-700/50 p-4 md:p-6">
-            <form onSubmit={sendMessage} className="flex gap-3">
-              <div className="flex-1 relative">
-                <input
-                  type="text"
-                  value={input}
-                  onChange={(e) => setInput(e.target.value)}
-                  placeholder="Type your message..."
-                  disabled={loading}
-                  className="w-full bg-slate-900/50 text-slate-100 placeholder-slate-500 rounded-2xl px-5 md:px-6 py-3.5 md:py-4 focus:outline-none focus:ring-2 focus:ring-purple-500/50 border border-slate-700/50 transition-all duration-300 disabled:opacity-50 text-sm md:text-base backdrop-blur-sm"
-                />
-                <div className="absolute right-4 top-1/2 -translate-y-1/2 text-slate-600 text-xs hidden md:flex items-center gap-2">
-                  <kbd className="px-2 py-1 bg-slate-800 rounded border border-slate-700 text-[10px]">Enter</kbd>
-                  <span>to send</span>
-                </div>
-              </div>
-              
-              <button
-                type="submit"
-                disabled={loading || !input.trim()}
-                className="relative group bg-gradient-to-r from-purple-600 to-blue-600 hover:from-purple-500 hover:to-blue-500 text-white px-6 md:px-8 py-3.5 md:py-4 rounded-2xl font-semibold transition-all duration-300 disabled:opacity-50 disabled:cursor-not-allowed shadow-lg shadow-purple-500/30 hover:shadow-purple-500/50 hover:scale-105 disabled:hover:scale-100"
-              >
-                <span className="flex items-center gap-2">
-                  <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 19l9 2-9-18-9 18 9-2zm0 0v-8" />
-                  </svg>
-                  <span className="hidden md:inline">Send</span>
-                </span>
-                
-                {/* Glow effect on hover */}
-                <div className="absolute inset-0 rounded-2xl bg-gradient-to-r from-purple-400 to-blue-400 opacity-0 group-hover:opacity-20 blur-xl transition-opacity duration-300"></div>
-              </button>
-            </form>
-
-            {/* Footer Info */}
-            <div className="mt-3 flex items-center justify-center gap-2 text-[10px] md:text-xs text-slate-600">
-              <svg className="w-3 h-3" fill="currentColor" viewBox="0 0 20 20">
-                <path fillRule="evenodd" d="M18 10a8 8 0 11-16 0 8 8 0 0116 0zm-7-4a1 1 0 11-2 0 1 1 0 012 0zM9 9a1 1 0 000 2v3a1 1 0 001 1h1a1 1 0 100-2v-3a1 1 0 00-1-1H9z" clipRule="evenodd" />
+        <div className="flex-1 overflow-y-auto p-6 space-y-6 bg-transparent custom-scrollbar">
+          {messages.length === 0 && (
+            <div className="flex flex-col items-center justify-center h-full text-zinc-500">
+              <svg width="48" height="48" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1" className="mb-4 opacity-50">
+                <circle cx="12" cy="12" r="10"></circle><path d="M12 16v-4"></path><path d="M12 8h.01"></path>
               </svg>
-              <span>AI can make mistakes. Check important info.</span>
+              <p className="text-sm font-medium tracking-wide">Initiate conversation or drop some code...</p>
             </div>
-          </footer>
+          )}
+
+          {messages.map((m) => (
+            <div key={m.id} className={`flex ${m.role === 'user' ? 'justify-end' : 'justify-start'}`}>
+              <div className={`flex gap-4 max-w-[85%] ${m.role === 'user' ? 'flex-row-reverse' : 'flex-row'}`}>
+                <div className={`w-8 h-8 rounded-full flex-shrink-0 flex items-center justify-center mt-1 border
+                  ${m.role === 'user' ? 'bg-zinc-800 border-zinc-700 text-zinc-300' : 'bg-white border-white text-black'}`}
+                >
+                  {m.role === 'user' ? (
+                    <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5"><path d="M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2"></path><circle cx="12" cy="7" r="4"></circle></svg>
+                  ) : (
+                    <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5"><path d="M12 8V4H8"></path><rect width="16" height="12" x="4" y="8" rx="2"></rect></svg>
+                  )}
+                </div>
+
+                <div className="flex flex-col gap-2 min-w-0">
+                  <div className={`px-5 py-3.5 rounded-2xl text-sm md:text-base tracking-wide
+                    ${m.role === 'user' 
+                      ? 'bg-zinc-800 text-zinc-100 rounded-tr-sm shadow-md' 
+                      : 'bg-transparent text-zinc-300'
+                    }`}
+                  >
+                    {renderMessageContent(m.content)}
+                  </div>
+
+                  {m.role === 'assistant' && (
+                    <div className="flex items-start">
+                      <button
+                        onClick={() => handlePlayAudio(m.id, m.content)}
+                        disabled={m.audioLoading}
+                        className={`flex items-center gap-2 px-3 py-1.5 rounded-full text-xs font-medium border transition-all duration-300
+                          ${m.audioLoading ? 'bg-zinc-900/50 text-zinc-600 border-zinc-800 cursor-not-allowed' : 'bg-zinc-900/50 text-zinc-400 border-zinc-800 hover:bg-zinc-800 hover:text-zinc-100 hover:border-zinc-600 shadow-sm'}`}
+                      >
+                        {m.audioLoading ? (
+                          <svg className="animate-spin h-3.5 w-3.5 text-zinc-500" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24"><circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4"></circle><path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path></svg>
+                        ) : (
+                          <svg width="12" height="12" viewBox="0 0 24 24" fill="currentColor" stroke="none"><polygon points="5 3 19 12 5 21 5 3"></polygon></svg>
+                        )}
+                        {m.audioLoading ? 'Speaking...' : 'Listen'}
+                      </button>
+                      <button
+                        type="button"
+                        onClick={stopAudio}
+                        disabled={!isSpeaking || activeSpeechId !== m.id}
+                        className={`ml-2 flex items-center gap-2 px-3 py-1.5 rounded-full text-xs font-medium border transition-all duration-300
+                          ${isSpeaking && activeSpeechId === m.id ? 'bg-red-900/30 text-red-300 border-red-700 hover:bg-red-800/40' : 'bg-zinc-900/40 text-zinc-600 border-zinc-800 cursor-not-allowed'}`}
+                      >
+                        Stop Audio
+                      </button>
+                      {m.audioError && <span className="ml-3 mt-1.5 text-xs text-red-400/80">{m.audioError}</span>}
+                    </div>
+                  )}
+                </div>
+              </div>
+            </div>
+          ))}
+
+          {loading && (
+            <div className="flex justify-start gap-4">
+              <div className="w-8 h-8 rounded-full bg-white text-black flex items-center justify-center flex-shrink-0 border border-white mt-1">
+                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5"><path d="M12 8V4H8"></path><rect width="16" height="12" x="4" y="8" rx="2"></rect></svg>
+              </div>
+              <div className="bg-transparent px-2 py-4 flex items-center gap-1.5">
+                <div className="w-1.5 h-1.5 bg-zinc-500 rounded-full animate-bounce"></div>
+                <div className="w-1.5 h-1.5 bg-zinc-500 rounded-full animate-bounce" style={{ animationDelay: '0.2s' }}></div>
+                <div className="w-1.5 h-1.5 bg-zinc-500 rounded-full animate-bounce" style={{ animationDelay: '0.4s' }}></div>
+              </div>
+            </div>
+          )}
+          <div ref={messagesEndRef} />
+        </div>
+
+        <div className="p-4 bg-[#0a0a0a] border-t border-zinc-800/80">
+          <form onSubmit={handleSend} className="relative flex items-center max-w-3xl mx-auto">
+            <input
+              type="text"
+              value={input}
+              onChange={(e) => setInput(e.target.value)}
+              placeholder="Send a message to Ashish's AI..."
+              className="w-full bg-zinc-900 border border-zinc-800 focus:bg-zinc-900 focus:border-zinc-700 focus:ring-1 focus:ring-zinc-700 rounded-2xl px-5 py-4 pr-16 text-sm md:text-base text-zinc-100 placeholder-zinc-500 outline-none transition-all shadow-inner"
+            />
+            <button
+              type="submit"
+              disabled={loading || !input.trim()}
+              className={`absolute right-2 p-2.5 rounded-xl flex items-center justify-center transition-all duration-200
+                ${input.trim() && !loading ? 'bg-white text-black hover:bg-zinc-200 shadow-lg scale-100' : 'bg-zinc-800 text-zinc-600 cursor-not-allowed scale-95'}`}
+            >
+              <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
+                <line x1="22" y1="2" x2="11" y2="13"></line><polygon points="22 2 15 22 11 13 2 9 22 2"></polygon>
+              </svg>
+            </button>
+          </form>
+          <div className="text-center mt-3 mb-1">
+            <span className="text-[11px] text-zinc-600 tracking-wide font-medium">AI generated content may be inaccurate.</span>
+          </div>
         </div>
       </div>
 
-      {/* Global Styles */}
-      <style jsx>{`
-        @keyframes slideIn {
-          from {
-            opacity: 0;
-            transform: translateY(10px);
-          }
-          to {
-            opacity: 1;
-            transform: translateY(0);
-          }
-        }
-
-        .animate-slideIn {
-          animation: slideIn 0.3s ease-out;
-        }
-
-        .custom-scrollbar::-webkit-scrollbar {
-          width: 8px;
-        }
-
-        .custom-scrollbar::-webkit-scrollbar-track {
-          background: rgba(30, 41, 59, 0.3);
-          border-radius: 10px;
-        }
-
-        .custom-scrollbar::-webkit-scrollbar-thumb {
-          background: rgba(148, 163, 184, 0.3);
-          border-radius: 10px;
-        }
-
-        .custom-scrollbar::-webkit-scrollbar-thumb:hover {
-          background: rgba(148, 163, 184, 0.5);
-        }
-
-        .delay-1000 {
-          animation-delay: 1s;
-        }
-
-        .delay-500 {
-          animation-delay: 0.5s;
-        }
-      `}</style>
+      <style dangerouslySetInnerHTML={{__html: `
+        .custom-scrollbar::-webkit-scrollbar { width: 6px; }
+        .custom-scrollbar::-webkit-scrollbar-track { background: transparent; }
+        .custom-scrollbar::-webkit-scrollbar-thumb { background: #3f3f46; border-radius: 10px; }
+        .custom-scrollbar::-webkit-scrollbar-thumb:hover { background: #52525b; }
+      `}} />
     </div>
   );
 }

@@ -1,11 +1,11 @@
 import express from "express"
-import { generateContent } from "../Controller/generateController.js";
+import { generateText } from "../Controller/generateController.js";
 
 
 
 const generateRoute = express.Router()
 
 
-  generateRoute.post("/generate", generateContent);
+  generateRoute.post("/generate-text", generateText);
 
   export default generateRoute
