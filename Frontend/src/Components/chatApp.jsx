@@ -341,7 +341,7 @@ export default function RefinedChatApp() {
     setLoading(true);
 
     try {
-      const { data } = await axios.post("http://localhost:3000/generate", {
+      const { data } = await axios.post("https://ai-chet-bot.onrender.com/generate", {
         message: userMessage.content,
         language: messageLanguage,
       });
