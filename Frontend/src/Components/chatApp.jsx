@@ -76,13 +76,38 @@ const detectLanguage = (text) => {
   return LANG.EN;
 };
 
-const parseMessageBlocks = (content) => {
+const splitTextIntoPointItems = (text) => {
+  const normalizedText = String(text || "")
+    .replace(/\s+/g, " ")
+    .trim();
+
+  if (!normalizedText) return [];
+
+  const sentenceMatches = normalizedText.match(/[^.!?\u0964]+[.!?\u0964]?/g) || [normalizedText];
+  return sentenceMatches
+    .map((item) => item.trim())
+    .filter(Boolean);
+};
+
+const parseMessageBlocks = (content, options = {}) => {
+  const { forcePoints = false } = options;
   const lines = String(content || "")
     .split("\n")
     .map((line) => line.trim())
     .filter(Boolean);
 
   if (!lines.length) return [{ type: "text", text: "" }];
+
+  if (forcePoints) {
+    const items = lines.flatMap((line) => {
+      const listMatch = line.match(/^(?:[-*\u2022]\s+|\d+[.)]\s+)(.+)$/);
+      if (listMatch) return [listMatch[1].trim()];
+      return splitTextIntoPointItems(line);
+    });
+
+    if (items.length) return [{ type: "list", items }];
+    return [{ type: "text", text: lines.join(" ") }];
+  }
 
   const blocks = [];
   let listItems = [];
@@ -465,8 +490,8 @@ export default function RefinedChatApp() {
           <AnimatePresence initial={false}>
             <div className="space-y-3">
               {messages.map((message) => {
-                const blocks = parseMessageBlocks(message.content);
                 const isUser = message.role === "user";
+                const blocks = parseMessageBlocks(message.content, { forcePoints: !isUser });
 
                 return (
                   <MotionArticle
@@ -485,13 +510,15 @@ export default function RefinedChatApp() {
                           : "border-white/10 bg-slate-900/70 text-slate-100"
                       }`}
                     >
-                      <div className="space-y-2 leading-relaxed">
+                      <div className={`space-y-2 break-words ${isUser ? "leading-relaxed" : "leading-7"}`}>
                         {blocks.map((block, blockIndex) => {
                           if (block.type === "list") {
                             return (
                               <ul
                                 key={`${message.id}-list-${blockIndex}`}
-                                className="list-disc space-y-1 pl-5 marker:text-cyan-300"
+                                className={`list-disc pl-5 ${
+                                  isUser ? "space-y-1 marker:text-slate-700" : "space-y-2 marker:text-cyan-300"
+                                }`}
                               >
                                 {block.items.map((item, itemIndex) => (
                                   <li key={`${message.id}-item-${itemIndex}`}>{item}</li>
