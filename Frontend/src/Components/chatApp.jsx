@@ -1,175 +1,371 @@
-import React, { useState, useRef, useEffect } from 'react';
-import axios from 'axios';
+﻿import React, { useEffect, useMemo, useRef, useState } from "react";
+import axios from "axios";
+import { AnimatePresence, motion } from "framer-motion";
 
-export default function SimpleTextChat() {
-  const [messages, setMessages] = useState([]);
-  const [input, setInput] = useState('');
-  const [loading, setLoading] = useState(false);
-  const [isSpeaking, setIsSpeaking] = useState(false);
-  const [activeSpeechId, setActiveSpeechId] = useState(null);
-  const messagesEndRef = useRef(null);
+const LANG = {
+  EN: "en-IN",
+  HI: "hi-IN",
+};
 
-  const scrollToBottom = () => {
-    messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
+const UI_TEXT = {
+  [LANG.EN]: {
+    appTitle: "Ashish AI",
+    appSubTitle: "Voice-first smart assistant",
+    greeting: "Hello! Ask anything. I can answer in English or Hindi.",
+    placeholderTyping: "Type your message...",
+    placeholderListening: "Listening... speak now",
+    thinking: "Thinking...",
+    listen: "Listen",
+    stop: "Stop",
+    micOn: "Stop Mic",
+    micOff: "Voice",
+    unsupportedVoice: "Your browser does not support voice input. Use Chrome.",
+    fallback: "Sorry, I could not generate a response.",
+    serverError: "Server error. Please check backend connection.",
+    languageToggle: "Lang",
+  },
+  [LANG.HI]: {
+    appTitle: "Ashish AI",
+    appSubTitle: "Voice-first smart assistant",
+    greeting:
+      "\u0928\u092e\u0938\u094d\u0924\u0947! \u0906\u092a \u0915\u0941\u091b \u092d\u0940 \u092a\u0942\u091b \u0938\u0915\u0924\u0947 \u0939\u0948\u0902. \u092e\u0948\u0902 Hindi \u092f\u093e English \u092e\u0947\u0902 \u091c\u0935\u093e\u092c \u0926\u0942\u0901\u0917\u093e.",
+    placeholderTyping: "\u0905\u092a\u0928\u093e \u0938\u0935\u093e\u0932 \u0932\u093f\u0916\u0947\u0902...",
+    placeholderListening: "\u0938\u0941\u0928 \u0930\u0939\u093e \u0939\u0942\u0901... \u0905\u092c \u092c\u094b\u0932\u093f\u090f",
+    thinking: "\u0938\u094b\u091a \u0930\u0939\u093e \u0939\u0942\u0901...",
+    listen: "\u0938\u0941\u0928\u0947\u0902",
+    stop: "\u0930\u094b\u0915\u0947\u0902",
+    micOn: "Mic \u092c\u0902\u0926",
+    micOff: "Voice",
+    unsupportedVoice:
+      "\u0906\u092a\u0915\u093e browser voice input support \u0928\u0939\u0940\u0902 \u0915\u0930\u0924\u093e. \u0915\u0943\u092a\u092f\u093e Chrome use \u0915\u0930\u0947\u0902.",
+    fallback: "\u0915\u094d\u0937\u092e\u093e \u0915\u0930\u0947\u0902, \u091c\u0935\u093e\u092c \u0924\u0948\u092f\u093e\u0930 \u0928\u0939\u0940\u0902 \u0939\u094b \u092a\u093e\u092f\u093e.",
+    serverError: "Server error. Backend connection check \u0915\u0930\u0947\u0902.",
+    languageToggle: "\u092d\u093e\u0937\u093e",
+  },
+};
+
+const INPUT_ALLOWED_REGEX = /[^\p{Script=Devanagari}A-Za-z0-9\s.,!?;:'"()-]/gu;
+const OUTPUT_ALLOWED_REGEX = /[^\p{Script=Devanagari}A-Za-z0-9\s.,!?;:'"()*:\n.\u2022\u0964-]/gu;
+const ROMAN_HINDI_HINT_REGEX =
+  /\b(kya|kaise|kyu|kyon|namaste|dhanyavad|aap|mujhe|mera|meri|hai|nahi|haan|kripya|samjhao|batayo|batao|iska|isme)\b/i;
+
+const createMessageId = () => `${Date.now()}-${Math.floor(Math.random() * 1e6)}`;
+
+const sanitizeInputText = (raw) =>
+  String(raw || "")
+    .replace(INPUT_ALLOWED_REGEX, " ")
+    .replace(/([!?.,])\1+/g, "$1")
+    .replace(/\s{2,}/g, " ")
+    .trim();
+
+const sanitizeOutputText = (raw) =>
+  String(raw || "")
+    .replace(/\r\n/g, "\n")
+    .replace(OUTPUT_ALLOWED_REGEX, " ")
+    .split("\n")
+    .map((line) => line.replace(/\s{2,}/g, " ").trim())
+    .filter(Boolean)
+    .join("\n")
+    .trim();
+
+const detectLanguage = (text) => {
+  const content = String(text || "").trim();
+  if (!content) return LANG.EN;
+  if (/[\u0900-\u097F]/.test(content)) return LANG.HI;
+  if (ROMAN_HINDI_HINT_REGEX.test(content)) return LANG.HI;
+  return LANG.EN;
+};
+
+const parseMessageBlocks = (content) => {
+  const lines = String(content || "")
+    .split("\n")
+    .map((line) => line.trim())
+    .filter(Boolean);
+
+  if (!lines.length) return [{ type: "text", text: "" }];
+
+  const blocks = [];
+  let listItems = [];
+  let textLines = [];
+
+  const flushList = () => {
+    if (listItems.length) {
+      blocks.push({ type: "list", items: [...listItems] });
+      listItems = [];
+    }
   };
 
+  const flushText = () => {
+    if (textLines.length) {
+      blocks.push({ type: "text", text: textLines.join(" ") });
+      textLines = [];
+    }
+  };
+
+  for (const line of lines) {
+    const listMatch = line.match(/^(?:[-*\u2022]\s+|\d+[.)]\s+)(.+)$/);
+    if (listMatch) {
+      flushText();
+      listItems.push(listMatch[1].trim());
+      continue;
+    }
+
+    flushList();
+    textLines.push(line);
+  }
+
+  flushText();
+  flushList();
+
+  return blocks;
+};
+
+const pickVoice = (voices, preferredLang) => {
+  if (!voices.length) return null;
+
+  const langPrefix = preferredLang === LANG.HI ? "hi" : "en";
+  const premiumPattern = /(google|natural|microsoft|neural|premium|zira|heera|rahul|aditya|amit|rohan)/i;
+
+  return (
+    voices.find(
+      (voice) =>
+        voice.lang?.toLowerCase().startsWith(langPrefix) && premiumPattern.test(voice.name)
+    ) ||
+    voices.find((voice) => voice.lang?.toLowerCase().startsWith(langPrefix)) ||
+    (preferredLang === LANG.HI &&
+      (voices.find((voice) => voice.lang?.toLowerCase().startsWith("en-in")) ||
+        voices.find((voice) => voice.lang?.toLowerCase().startsWith("en")))) ||
+    voices.find((voice) => premiumPattern.test(voice.name)) ||
+    voices[0]
+  );
+};
+
+const messageAnimation = {
+  hidden: { opacity: 0, y: 16, scale: 0.98 },
+  visible: { opacity: 1, y: 0, scale: 1, transition: { duration: 0.25, ease: [0.22, 1, 0.36, 1] } },
+  exit: { opacity: 0, y: -10, transition: { duration: 0.15 } },
+};
+
+const MotionSection = motion.section;
+const MotionDiv = motion.div;
+const MotionArticle = motion.article;
+const MotionButton = motion.button;
+const MotionSpan = motion.span;
+
+export default function RefinedChatApp() {
+  const [messages, setMessages] = useState([]);
+  const [input, setInput] = useState("");
+  const [loading, setLoading] = useState(false);
+  const [isListening, setIsListening] = useState(false);
+  const [isSpeaking, setIsSpeaking] = useState(false);
+  const [activeSpeechId, setActiveSpeechId] = useState(null);
+  const [micLanguage, setMicLanguage] = useState(LANG.EN);
+  const [uiLanguage, setUiLanguage] = useState(LANG.EN);
+  const [availableVoices, setAvailableVoices] = useState([]);
+
+  const messagesEndRef = useRef(null);
+  const recognitionRef = useRef(null);
+
+  const uiText = useMemo(() => UI_TEXT[uiLanguage] || UI_TEXT[LANG.EN], [uiLanguage]);
+
   useEffect(() => {
-    scrollToBottom();
+    messagesEndRef.current?.scrollIntoView({ behavior: "smooth" });
   }, [messages, loading]);
 
-  const sanitizeText = (value) =>
-    String(value ?? '')
-      .replace(/[^\p{L}\p{N}\s.,!?()'"-]/gu, ' ')
-      .replace(/\s+/g, ' ')
-      .trim();
+  useEffect(() => {
+    if (!window.speechSynthesis) return undefined;
 
-  const loadVoices = () =>
-    new Promise((resolve) => {
-      let voices = speechSynthesis.getVoices();
-      if (voices.length) {
-        resolve(voices);
-      } else {
-        speechSynthesis.onvoiceschanged = () => {
-          voices = speechSynthesis.getVoices();
-          resolve(voices);
-        };
+    const syncVoices = () => {
+      const voices = window.speechSynthesis.getVoices();
+      setAvailableVoices(voices || []);
+    };
+
+    syncVoices();
+
+    if (window.speechSynthesis.addEventListener) {
+      window.speechSynthesis.addEventListener("voiceschanged", syncVoices);
+      return () => window.speechSynthesis.removeEventListener("voiceschanged", syncVoices);
+    }
+
+    window.speechSynthesis.onvoiceschanged = syncVoices;
+    return () => {
+      window.speechSynthesis.onvoiceschanged = null;
+    };
+  }, []);
+
+  useEffect(() => {
+    return () => {
+      window.speechSynthesis?.cancel();
+      try {
+        recognitionRef.current?.stop();
+      } catch {
+        // no-op
       }
-    });
+    };
+  }, []);
 
-  const pickMaleVoice = (voices) => {
-    const malePattern = /(male|man|david|rahul|aditya|amit|rohan|karun|hitesh|shubh)/i;
-    return (
-      voices.find((v) => v.lang === 'hi-IN' && malePattern.test(v.name)) ||
-      voices.find((v) => v.lang.startsWith('en') && malePattern.test(v.name)) ||
-      voices.find((v) => v.lang === 'hi-IN') ||
-      voices.find((v) => v.lang.startsWith('en')) ||
-      null
-    );
+  const toggleMicLanguage = () => {
+    setMicLanguage((prev) => {
+      const next = prev === LANG.HI ? LANG.EN : LANG.HI;
+      setUiLanguage(next);
+      return next;
+    });
+  };
+
+  const startListening = () => {
+    const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;
+
+    if (!SpeechRecognition) {
+      alert(uiText.unsupportedVoice);
+      return;
+    }
+
+    if (recognitionRef.current) {
+      try {
+        recognitionRef.current.stop();
+      } catch {
+        // no-op
+      }
+    }
+
+    const recognition = new SpeechRecognition();
+    recognition.lang = micLanguage;
+    recognition.continuous = false;
+    recognition.interimResults = false;
+    recognition.maxAlternatives = 1;
+
+    recognition.onstart = () => setIsListening(true);
+    recognition.onerror = () => setIsListening(false);
+    recognition.onend = () => {
+      setIsListening(false);
+      recognitionRef.current = null;
+    };
+
+    recognition.onresult = (event) => {
+      const transcript = event?.results?.[0]?.[0]?.transcript || "";
+      const filteredTranscript = sanitizeInputText(transcript);
+      const transcriptLanguage = detectLanguage(filteredTranscript);
+
+      setInput(filteredTranscript);
+      setUiLanguage(transcriptLanguage);
+      setMicLanguage(transcriptLanguage);
+    };
+
+    recognitionRef.current = recognition;
+    recognition.start();
+  };
+
+  const stopListening = () => {
+    try {
+      recognitionRef.current?.stop();
+    } catch {
+      // no-op
+    }
+    setIsListening(false);
+    recognitionRef.current = null;
   };
 
   const stopAudio = () => {
-    if (window?.speechSynthesis) {
-      window.speechSynthesis.cancel();
-    }
+    window.speechSynthesis?.cancel();
     setIsSpeaking(false);
     setActiveSpeechId(null);
-    setMessages((prev) => prev.map((m) => ({ ...m, audioLoading: false })));
   };
 
-  const handlePlayAudio = async (messageId, text) => {
-    setMessages((prev) =>
-      prev.map((m) =>
-        m.id === messageId ? { ...m, audioLoading: true, audioError: null } : m
-      )
-    );
+  const handlePlayAudio = (messageId, text, messageLanguage) => {
+    if (!window.speechSynthesis) return;
 
-    try {
-      if (!window.speechSynthesis) {
-        throw new Error('Web Speech API not supported in this browser.');
-      }
+    const cleanText = sanitizeOutputText(text);
+    if (!cleanText) return;
 
-      const cleanedText = sanitizeText(text);
-      if (!cleanedText) {
-        throw new Error('Readable text not available for audio.');
-      }
+    window.speechSynthesis.cancel();
 
-      const utterance = new SpeechSynthesisUtterance(cleanedText);
-      const voices = await loadVoices();
-      const selectedVoice = pickMaleVoice(voices);
+    const speechLanguage = detectLanguage(cleanText) || messageLanguage || LANG.EN;
+    const voices = availableVoices.length ? availableVoices : window.speechSynthesis.getVoices();
+    const selectedVoice = pickVoice(voices, speechLanguage);
 
-      if (selectedVoice) {
-        utterance.voice = selectedVoice;
-        utterance.lang = selectedVoice.lang;
-      } else {
-        utterance.lang = 'hi-IN';
-      }
+    const utterance = new SpeechSynthesisUtterance(cleanText);
+    utterance.voice = selectedVoice || null;
+    utterance.lang = selectedVoice?.lang || speechLanguage;
+    utterance.rate = 1;
+    utterance.pitch = 1;
 
-      utterance.rate = 0.95;
-      utterance.pitch = 0.85;
-      utterance.volume = 1;
+    utterance.onstart = () => {
+      setIsSpeaking(true);
+      setActiveSpeechId(messageId);
+    };
 
-      utterance.onstart = () => {
-        setIsSpeaking(true);
-        setActiveSpeechId(messageId);
-      };
-
-      utterance.onend = () => {
-        setIsSpeaking(false);
-        setActiveSpeechId(null);
-        setMessages((prev) =>
-          prev.map((m) =>
-            m.id === messageId ? { ...m, audioLoading: false } : m
-          )
-        );
-      };
-
-      utterance.onerror = () => {
-        setIsSpeaking(false);
-        setActiveSpeechId(null);
-        setMessages((prev) =>
-          prev.map((m) =>
-            m.id === messageId
-              ? {
-                  ...m,
-                  audioLoading: false,
-                  audioError: 'Voice playback failed. Text available.',
-                }
-              : m
-          )
-        );
-      };
-
-      window.speechSynthesis.cancel();
-      window.speechSynthesis.speak(utterance);
-    } catch (error) {
+    utterance.onend = () => {
       setIsSpeaking(false);
       setActiveSpeechId(null);
-      setMessages((prev) =>
-        prev.map((m) =>
-          m.id === messageId
-            ? {
-                ...m,
-                audioLoading: false,
-                audioError: error.message,
-              }
-            : m
-        )
-      );
+    };
+
+    utterance.onerror = () => {
+      setIsSpeaking(false);
+      setActiveSpeechId(null);
+    };
+
+    window.speechSynthesis.speak(utterance);
+  };
+
+  const onChangeInput = (event) => {
+    const typedValue = event.target.value;
+    setInput(typedValue);
+
+    if (typedValue.trim()) {
+      const typedLanguage = detectLanguage(typedValue);
+      setUiLanguage(typedLanguage);
+      setMicLanguage(typedLanguage);
     }
   };
 
-  const handleSend = async (e) => {
-    e.preventDefault();
-    if (!input.trim() || loading) return;
+  const handleSend = async (event) => {
+    event?.preventDefault();
+    if (loading) return;
 
-    const currentInput = sanitizeText(input);
-    const userMsg = { id: Date.now(), role: 'user', content: currentInput };
+    const cleanInput = sanitizeInputText(input);
+    if (!cleanInput) return;
 
-    setMessages((prev) => [...prev, userMsg]);
-    setInput('');
+    const messageLanguage = detectLanguage(cleanInput);
+    setUiLanguage(messageLanguage);
+    setMicLanguage(messageLanguage);
+
+    const userMessage = {
+      id: createMessageId(),
+      role: "user",
+      content: cleanInput,
+      language: messageLanguage,
+    };
+
+    setMessages((prev) => [...prev, userMessage]);
+    setInput("");
     setLoading(true);
 
     try {
-      const { data } = await axios.post('http://localhost:3000/generate-text', {
-        message: currentInput,
+      const { data } = await axios.post("http://localhost:3000/generate", {
+        message: userMessage.content,
+        language: messageLanguage,
       });
 
-      const aiMsg = {
-        id: Date.now() + 1,
-        role: 'assistant',
-        content: sanitizeText(data?.text || 'Text response mila, lekin format issue tha.'),
-        audioLoading: false,
-        audioError: null,
+      const rawReply = data?.text || data?.reply || UI_TEXT[messageLanguage].fallback;
+      const filteredReply = sanitizeOutputText(rawReply) || UI_TEXT[messageLanguage].fallback;
+      const replyLanguage = detectLanguage(filteredReply) || messageLanguage;
+
+      const assistantMessage = {
+        id: createMessageId(),
+        role: "assistant",
+        content: filteredReply,
+        language: replyLanguage,
       };
 
-      setMessages((prev) => [...prev, aiMsg]);
-    } catch (err) {
+      setMessages((prev) => [...prev, assistantMessage]);
+    } catch {
       setMessages((prev) => [
         ...prev,
         {
-          id: Date.now() + 1,
-          role: 'assistant',
-          content: 'Error: Server se text response nahi mila.',
+          id: createMessageId(),
+          role: "assistant",
+          content: UI_TEXT[messageLanguage].serverError,
+          language: messageLanguage,
         },
       ]);
     } finally {
@@ -177,140 +373,246 @@ export default function SimpleTextChat() {
     }
   };
 
-  const renderMessageContent = (text) => {
-    return <span className="whitespace-pre-wrap leading-relaxed">{text}</span>;
-  };
-
   return (
-    <div className="min-h-screen bg-zinc-950 flex items-center justify-center p-4 font-sans selection:bg-zinc-700 selection:text-white">
-      <div className="w-full max-w-4xl bg-[#0a0a0a] rounded-2xl shadow-2xl overflow-hidden flex flex-col h-[85vh] border border-zinc-800/80">
-        <div className="flex items-center gap-3 px-6 py-4 border-b border-zinc-800/80 bg-[#0a0a0a]/90 backdrop-blur-md z-10">
-          <div className="w-10 h-10 rounded-xl bg-white flex items-center justify-center shadow-md">
-            <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="black" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
-              <path d="M12 8V4H8"></path><rect width="16" height="12" x="4" y="8" rx="2"></rect><path d="M2 14h2"></path><path d="M20 14h2"></path><path d="M15 13v2"></path><path d="M9 13v2"></path>
-            </svg>
-          </div>
-          <div>
-            <h1 className="text-lg font-bold text-zinc-100 leading-tight">Ashish's AI</h1>
-            <p className="text-xs font-medium text-emerald-400 flex items-center gap-1.5">
-              <span className="w-1.5 h-1.5 rounded-full bg-emerald-400 animate-pulse shadow-[0_0_8px_rgba(52,211,153,0.8)]"></span>
-              System Online
-            </p>
-          </div>
-        </div>
-
-        <div className="flex-1 overflow-y-auto p-6 space-y-6 bg-transparent custom-scrollbar">
-          {messages.length === 0 && (
-            <div className="flex flex-col items-center justify-center h-full text-zinc-500">
-              <svg width="48" height="48" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1" className="mb-4 opacity-50">
-                <circle cx="12" cy="12" r="10"></circle><path d="M12 16v-4"></path><path d="M12 8h.01"></path>
-              </svg>
-              <p className="text-sm font-medium tracking-wide">Initiate conversation or drop some code...</p>
-            </div>
-          )}
-
-          {messages.map((m) => (
-            <div key={m.id} className={`flex ${m.role === 'user' ? 'justify-end' : 'justify-start'}`}>
-              <div className={`flex gap-4 max-w-[85%] ${m.role === 'user' ? 'flex-row-reverse' : 'flex-row'}`}>
-                <div className={`w-8 h-8 rounded-full flex-shrink-0 flex items-center justify-center mt-1 border
-                  ${m.role === 'user' ? 'bg-zinc-800 border-zinc-700 text-zinc-300' : 'bg-white border-white text-black'}`}
-                >
-                  {m.role === 'user' ? (
-                    <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5"><path d="M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2"></path><circle cx="12" cy="7" r="4"></circle></svg>
-                  ) : (
-                    <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5"><path d="M12 8V4H8"></path><rect width="16" height="12" x="4" y="8" rx="2"></rect></svg>
-                  )}
-                </div>
-
-                <div className="flex flex-col gap-2 min-w-0">
-                  <div className={`px-5 py-3.5 rounded-2xl text-sm md:text-base tracking-wide
-                    ${m.role === 'user' 
-                      ? 'bg-zinc-800 text-zinc-100 rounded-tr-sm shadow-md' 
-                      : 'bg-transparent text-zinc-300'
-                    }`}
-                  >
-                    {renderMessageContent(m.content)}
-                  </div>
-
-                  {m.role === 'assistant' && (
-                    <div className="flex items-start">
-                      <button
-                        onClick={() => handlePlayAudio(m.id, m.content)}
-                        disabled={m.audioLoading}
-                        className={`flex items-center gap-2 px-3 py-1.5 rounded-full text-xs font-medium border transition-all duration-300
-                          ${m.audioLoading ? 'bg-zinc-900/50 text-zinc-600 border-zinc-800 cursor-not-allowed' : 'bg-zinc-900/50 text-zinc-400 border-zinc-800 hover:bg-zinc-800 hover:text-zinc-100 hover:border-zinc-600 shadow-sm'}`}
-                      >
-                        {m.audioLoading ? (
-                          <svg className="animate-spin h-3.5 w-3.5 text-zinc-500" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24"><circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4"></circle><path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path></svg>
-                        ) : (
-                          <svg width="12" height="12" viewBox="0 0 24 24" fill="currentColor" stroke="none"><polygon points="5 3 19 12 5 21 5 3"></polygon></svg>
-                        )}
-                        {m.audioLoading ? 'Speaking...' : 'Listen'}
-                      </button>
-                      <button
-                        type="button"
-                        onClick={stopAudio}
-                        disabled={!isSpeaking || activeSpeechId !== m.id}
-                        className={`ml-2 flex items-center gap-2 px-3 py-1.5 rounded-full text-xs font-medium border transition-all duration-300
-                          ${isSpeaking && activeSpeechId === m.id ? 'bg-red-900/30 text-red-300 border-red-700 hover:bg-red-800/40' : 'bg-zinc-900/40 text-zinc-600 border-zinc-800 cursor-not-allowed'}`}
-                      >
-                        Stop Audio
-                      </button>
-                      {m.audioError && <span className="ml-3 mt-1.5 text-xs text-red-400/80">{m.audioError}</span>}
-                    </div>
-                  )}
-                </div>
-              </div>
-            </div>
-          ))}
-
-          {loading && (
-            <div className="flex justify-start gap-4">
-              <div className="w-8 h-8 rounded-full bg-white text-black flex items-center justify-center flex-shrink-0 border border-white mt-1">
-                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5"><path d="M12 8V4H8"></path><rect width="16" height="12" x="4" y="8" rx="2"></rect></svg>
-              </div>
-              <div className="bg-transparent px-2 py-4 flex items-center gap-1.5">
-                <div className="w-1.5 h-1.5 bg-zinc-500 rounded-full animate-bounce"></div>
-                <div className="w-1.5 h-1.5 bg-zinc-500 rounded-full animate-bounce" style={{ animationDelay: '0.2s' }}></div>
-                <div className="w-1.5 h-1.5 bg-zinc-500 rounded-full animate-bounce" style={{ animationDelay: '0.4s' }}></div>
-              </div>
-            </div>
-          )}
-          <div ref={messagesEndRef} />
-        </div>
-
-        <div className="p-4 bg-[#0a0a0a] border-t border-zinc-800/80">
-          <form onSubmit={handleSend} className="relative flex items-center max-w-3xl mx-auto">
-            <input
-              type="text"
-              value={input}
-              onChange={(e) => setInput(e.target.value)}
-              placeholder="Send a message to Ashish's AI..."
-              className="w-full bg-zinc-900 border border-zinc-800 focus:bg-zinc-900 focus:border-zinc-700 focus:ring-1 focus:ring-zinc-700 rounded-2xl px-5 py-4 pr-16 text-sm md:text-base text-zinc-100 placeholder-zinc-500 outline-none transition-all shadow-inner"
-            />
-            <button
-              type="submit"
-              disabled={loading || !input.trim()}
-              className={`absolute right-2 p-2.5 rounded-xl flex items-center justify-center transition-all duration-200
-                ${input.trim() && !loading ? 'bg-white text-black hover:bg-zinc-200 shadow-lg scale-100' : 'bg-zinc-800 text-zinc-600 cursor-not-allowed scale-95'}`}
-            >
-              <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
-                <line x1="22" y1="2" x2="11" y2="13"></line><polygon points="22 2 15 22 11 13 2 9 22 2"></polygon>
-              </svg>
-            </button>
-          </form>
-          <div className="text-center mt-3 mb-1">
-            <span className="text-[11px] text-zinc-600 tracking-wide font-medium">AI generated content may be inaccurate.</span>
-          </div>
-        </div>
+    <div className="relative flex h-[100dvh] w-full items-center justify-center overflow-hidden bg-slate-950 px-2 py-2 sm:px-4 sm:py-4">
+      <div className="pointer-events-none absolute inset-0">
+        <div className="absolute -left-20 top-10 h-64 w-64 rounded-full bg-cyan-400/15 blur-3xl" />
+        <div className="absolute -right-16 bottom-8 h-72 w-72 rounded-full bg-emerald-400/15 blur-3xl" />
+        <div className="absolute left-1/2 top-1/2 h-80 w-80 -translate-x-1/2 -translate-y-1/2 rounded-full bg-sky-500/10 blur-3xl" />
       </div>
 
-      <style dangerouslySetInnerHTML={{__html: `
-        .custom-scrollbar::-webkit-scrollbar { width: 6px; }
-        .custom-scrollbar::-webkit-scrollbar-track { background: transparent; }
-        .custom-scrollbar::-webkit-scrollbar-thumb { background: #3f3f46; border-radius: 10px; }
-        .custom-scrollbar::-webkit-scrollbar-thumb:hover { background: #52525b; }
-      `}} />
+      <MotionSection
+        initial={{ opacity: 0, y: 20 }}
+        animate={{ opacity: 1, y: 0 }}
+        transition={{ duration: 0.35, ease: [0.16, 1, 0.3, 1] }}
+        className="relative z-10 flex h-full max-h-[900px] w-full max-w-4xl flex-col overflow-hidden rounded-3xl border border-white/10 bg-white/5 shadow-[0_20px_80px_-20px_rgba(0,0,0,0.8)] backdrop-blur-xl"
+      >
+        <header className="border-b border-white/10 bg-slate-900/60 px-4 py-3 sm:px-6">
+          <div className="flex items-center justify-between gap-3">
+            <div className="min-w-0">
+              <h1 className="truncate text-base font-semibold tracking-tight text-white sm:text-lg">
+                {uiText.appTitle}
+              </h1>
+              <p className="truncate text-[11px] text-slate-300 sm:text-xs">{uiText.appSubTitle}</p>
+            </div>
+
+            <div className="flex items-center gap-2">
+              <span className="rounded-full border border-emerald-300/30 bg-emerald-300/10 px-2.5 py-1 text-[10px] font-semibold uppercase tracking-wider text-emerald-200">
+                Live
+              </span>
+              <span className="rounded-full border border-cyan-300/30 bg-cyan-300/10 px-2.5 py-1 text-[10px] font-semibold uppercase tracking-wider text-cyan-200">
+                {micLanguage === LANG.HI ? "HI" : "EN"}
+              </span>
+            </div>
+          </div>
+        </header>
+
+        <main className="relative flex-1 overflow-y-auto px-3 py-4 sm:px-5 sm:py-5">
+          {messages.length === 0 && (
+            <MotionDiv
+              initial={{ opacity: 0, y: 30 }}
+              animate={{ opacity: 1, y: 0 }}
+              transition={{ duration: 0.6 }}
+              className="mt-8 flex flex-col items-center justify-center space-y-8 text-center sm:mt-14"
+            >
+              <motion.div
+                animate={{
+                  boxShadow: [
+                    "0 0 0px rgba(34,211,238,0.4)",
+                    "0 0 50px rgba(34,211,238,0.8)",
+                    "0 0 0px rgba(34,211,238,0.4)",
+                  ],
+                }}
+                transition={{ repeat: Infinity, duration: 3 }}
+                className="flex h-24 w-24 items-center justify-center rounded-full bg-gradient-to-br from-cyan-400 to-emerald-400 text-3xl font-bold text-slate-900 shadow-xl"
+              >
+                AI
+              </motion.div>
+
+              <h2 className="bg-gradient-to-r from-cyan-300 via-sky-300 to-emerald-300 bg-clip-text text-3xl font-bold text-transparent sm:text-4xl">
+                Welcome to {uiText.appTitle}
+              </h2>
+
+              <p className="max-w-lg text-sm leading-relaxed text-slate-400 sm:text-base">
+                Your intelligent voice-first assistant. Ask anything in English or Hindi, switch
+                languages instantly, and experience smooth AI conversation.
+              </p>
+
+              <div className="grid w-full max-w-xl grid-cols-1 gap-4 sm:grid-cols-2">
+                {[
+                  "Explain JWT in simple words",
+                  "Best SEO tips for 2026",
+                  "Node.js project ideas",
+                  "How to improve UI animations?",
+                ].map((text, i) => (
+                  <motion.button
+                    key={i}
+                    whileHover={{ scale: 1.05 }}
+                    whileTap={{ scale: 0.95 }}
+                    onClick={() => {
+                      setInput(text);
+                      setUiLanguage(detectLanguage(text));
+                    }}
+                    className="rounded-xl border border-white/10 bg-white/5 px-4 py-3 text-sm text-slate-200 backdrop-blur-md transition-all duration-300 hover:border-cyan-300/30 hover:bg-white/10"
+                  >
+                    {text}
+                  </motion.button>
+                ))}
+              </div>
+            </MotionDiv>
+          )}
+
+          <AnimatePresence initial={false}>
+            <div className="space-y-3">
+              {messages.map((message) => {
+                const blocks = parseMessageBlocks(message.content);
+                const isUser = message.role === "user";
+
+                return (
+                  <MotionArticle
+                    key={message.id}
+                    layout
+                    variants={messageAnimation}
+                    initial="hidden"
+                    animate="visible"
+                    exit="exit"
+                    className={`flex ${isUser ? "justify-end" : "justify-start"}`}
+                  >
+                    <div
+                      className={`max-w-[92%] rounded-2xl border px-4 py-3 text-sm shadow-lg sm:max-w-[80%] sm:text-[15px] ${
+                        isUser
+                          ? "border-cyan-200/30 bg-gradient-to-br from-cyan-200 to-sky-300 text-slate-900"
+                          : "border-white/10 bg-slate-900/70 text-slate-100"
+                      }`}
+                    >
+                      <div className="space-y-2 leading-relaxed">
+                        {blocks.map((block, blockIndex) => {
+                          if (block.type === "list") {
+                            return (
+                              <ul
+                                key={`${message.id}-list-${blockIndex}`}
+                                className="list-disc space-y-1 pl-5 marker:text-cyan-300"
+                              >
+                                {block.items.map((item, itemIndex) => (
+                                  <li key={`${message.id}-item-${itemIndex}`}>{item}</li>
+                                ))}
+                              </ul>
+                            );
+                          }
+
+                          return (
+                            <p key={`${message.id}-text-${blockIndex}`} className="whitespace-pre-wrap">
+                              {block.text}
+                            </p>
+                          );
+                        })}
+                      </div>
+
+                      {!isUser && (
+                        <div className="mt-3 flex items-center gap-2 border-t border-white/10 pt-2">
+                          <MotionButton
+                            whileTap={{ scale: 0.97 }}
+                            onClick={() => handlePlayAudio(message.id, message.content, message.language)}
+                            className="inline-flex items-center gap-1.5 rounded-lg border border-white/15 bg-white/5 px-2.5 py-1.5 text-[11px] font-semibold text-slate-200 transition hover:bg-white/10"
+                          >
+                            <svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor" aria-hidden>
+                              <path d="M8 5v14l11-7z" />
+                            </svg>
+                            {UI_TEXT[message.language || uiLanguage].listen}
+                          </MotionButton>
+
+                          {isSpeaking && activeSpeechId === message.id && (
+                            <MotionButton
+                              whileTap={{ scale: 0.97 }}
+                              onClick={stopAudio}
+                              className="rounded-lg border border-rose-300/30 bg-rose-300/10 px-2.5 py-1.5 text-[11px] font-semibold text-rose-200"
+                            >
+                              {UI_TEXT[message.language || uiLanguage].stop}
+                            </MotionButton>
+                          )}
+                        </div>
+                      )}
+                    </div>
+                  </MotionArticle>
+                );
+              })}
+
+              {loading && (
+                <MotionDiv
+                  initial={{ opacity: 0, y: 8 }}
+                  animate={{ opacity: 1, y: 0 }}
+                  className="flex justify-start"
+                >
+                  <div className="inline-flex items-center gap-2 rounded-xl border border-white/10 bg-slate-900/70 px-3 py-2 text-xs text-slate-200">
+                    <span>{uiText.thinking}</span>
+                    <MotionSpan animate={{ opacity: [0.4, 1, 0.4] }} transition={{ repeat: Infinity, duration: 1.1 }}>
+                      .
+                    </MotionSpan>
+                    <MotionSpan animate={{ opacity: [0.3, 1, 0.3] }} transition={{ repeat: Infinity, duration: 1.1, delay: 0.15 }}>
+                      .
+                    </MotionSpan>
+                    <MotionSpan animate={{ opacity: [0.2, 1, 0.2] }} transition={{ repeat: Infinity, duration: 1.1, delay: 0.3 }}>
+                      .
+                    </MotionSpan>
+                  </div>
+                </MotionDiv>
+              )}
+            </div>
+          </AnimatePresence>
+
+          <div ref={messagesEndRef} />
+        </main>
+
+        <footer className="border-t border-white/10 bg-slate-900/70 p-3 sm:p-4">
+          <form onSubmit={handleSend} className="mx-auto flex w-full items-end gap-2 sm:gap-3">
+            <MotionButton
+              type="button"
+              whileTap={{ scale: 0.95 }}
+              onClick={isListening ? stopListening : startListening}
+              className={`h-11 shrink-0 rounded-xl border px-3 text-xs font-semibold transition sm:h-12 sm:px-4 ${
+                isListening
+                  ? "border-rose-300/40 bg-rose-300/15 text-rose-100"
+                  : "border-white/15 bg-white/5 text-slate-100 hover:bg-white/10"
+              }`}
+            >
+              {isListening ? uiText.micOn : uiText.micOff}
+            </MotionButton>
+
+            <MotionButton
+              type="button"
+              whileTap={{ scale: 0.95 }}
+              onClick={toggleMicLanguage}
+              className="h-11 shrink-0 rounded-xl border border-cyan-300/30 bg-cyan-300/10 px-3 text-xs font-semibold text-cyan-100 transition hover:bg-cyan-300/20 sm:h-12 sm:px-4"
+            >
+              {uiText.languageToggle}: {micLanguage === LANG.HI ? "HI" : "EN"}
+            </MotionButton>
+
+            <div className="flex-1">
+              <input
+                type="text"
+                value={input}
+                onChange={onChangeInput}
+                placeholder={isListening ? uiText.placeholderListening : uiText.placeholderTyping}
+                className="h-11 w-full rounded-xl border border-white/15 bg-black/40 px-3 text-sm text-slate-100 outline-none transition placeholder:text-slate-400 focus:border-cyan-300/60 focus:ring-2 focus:ring-cyan-300/20 sm:h-12 sm:px-4"
+                autoComplete="off"
+              />
+            </div>
+
+            <MotionButton
+              type="submit"
+              whileTap={{ scale: 0.95 }}
+              disabled={loading || !input.trim()}
+              className="inline-flex h-11 w-11 shrink-0 items-center justify-center rounded-xl bg-gradient-to-br from-cyan-300 to-emerald-300 text-slate-900 shadow-md transition hover:brightness-105 disabled:cursor-not-allowed disabled:opacity-50 sm:h-12 sm:w-12"
+              aria-label="Send message"
+            >
+              <svg width="19" height="19" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5">
+                <path d="M22 2L11 13" />
+                <path d="M22 2l-7 20-4-9-9-4 20-7z" />
+              </svg>
+            </MotionButton>
+          </form>
+        </footer>
+      </MotionSection>
     </div>
   );
 }
